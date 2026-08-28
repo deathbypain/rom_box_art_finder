@@ -1,0 +1,17 @@
+# Virtual environments
+.venv/
+build_env/
+
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller output
+build/
+dist/
+
+# App data / caches
+.cache/
+
+# Test fixtures (local test data)
+TestRoot/
