@@ -15,9 +15,16 @@ _SANITIZE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 def sanitize_filename(name: str) -> str:
-    """Replace filesystem-illegal characters with underscores, strip whitespace."""
+    """Replace filesystem-illegal characters with underscores.
+
+    Strips surrounding whitespace and collapses runs, then trims trailing
+    dots and spaces that Windows would reject or silently alter (e.g.
+    ``"Pac-Man. "`` -> ``"Pac-Man"``). Never returns a name ending in
+    ``.`` or a space.
+    """
     name = _SANITIZE_RE.sub("_", name)
     name = name.replace("  ", " ").strip()
+    name = name.rstrip(". ")
     if not name:
         name = "unnamed"
     return name
@@ -191,12 +198,13 @@ def scan_platform(platform_dir: Path) -> list[RomEntry]:
 
 
 def rename_rom(rom_entry: RomEntry, new_title: str) -> Path:
-    """Rename the local ROM file to *new_title* (preserving the extension).
+    """Rename the local ROM file to *new_title*, preserving the original
+    extension (and its case).
 
-    Returns the new path of the ROM file. The caller is responsible for
-    updating ``rom_entry.rom_path`` to the returned path.
+    Updates ``rom_entry.rom_path`` in place to the new path and returns it.
     """
-    new_name = sanitize_filename(new_title) + rom_entry.rom_ext
+    # Use the original suffix (not the lowercased rom_ext) so a .ZIP stays .ZIP.
+    new_name = sanitize_filename(new_title) + rom_entry.rom_path.suffix
     new_path = rom_entry.rom_path.with_name(new_name)
 
     if new_path != rom_entry.rom_path:

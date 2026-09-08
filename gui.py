@@ -8,6 +8,7 @@ Tkinter main thread via a queue.
 
 from __future__ import annotations
 
+import queue
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -462,12 +463,20 @@ class ReviewApp:
 
         For the prototype this clears the whole app memory cache and deletes
         disk cache for every configured repo, then re-fetches on demand.
+
+        A repo that a candidate load is *already* fetching is skipped: the
+        single-flight guard in ``fetcher`` means it will finish fetching and
+        repopulate the cache shortly, so double-fetching it here would just
+        burn rate limit. (Documented behavior: Refresh + in-flight candidate
+        load on the same repo issues one API call, not two.)
         """
         self._titles_by_repo.clear()
 
         def _work() -> None:
             try:
                 for repo in config.REPO_MAP.values():
+                    if fetcher.in_flight(repo):
+                        continue  # a candidate load owns this fetch; let it finish
                     fetcher.delete_cache(repo)
                     fetcher.get_thumbnail_names(repo)
                 self._task_queue.put(("refreshed", 0))
@@ -484,7 +493,10 @@ class ReviewApp:
     def _poll_tasks(self) -> None:
         try:
             while True:
-                task = self._task_queue.get_nowait()
+                try:
+                    task = self._task_queue.get_nowait()
+                except queue.Empty:
+                    break  # nothing queued yet; wait for the next poll
                 kind = task[0]
                 if kind == "scanned":
                     self._start_queue(task[1])
@@ -560,8 +572,11 @@ class ReviewApp:
                     if entry is not None and not self._is_current_entry(entry):
                         continue  # error belongs to a ROM the user left
                     self._set_idle_or_error(message)
-        except Exception:
-            pass  # queue.Empty
+        except Exception as exc:
+            # A task handler raised (e.g. the item 1 IndexError). Surface it
+            # instead of freezing silently; any still-queued tasks are
+            # re-polled on the next tick.
+            self._set_idle_or_error(f"Task handling failed: {exc}")
 
         self.root.after(100, self._poll_tasks)
 

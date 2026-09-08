@@ -82,7 +82,7 @@ a 403). Added retry with backoff to `fetcher.get_thumbnail_names`
 (`fetcher.py`): 3 attempts, 2s/4s delays, logged; same `RuntimeError` after
 final failure. Not a numbered item; noted here for traceability.
 
-### 4. [ ] Stop swallowing all exceptions in the task queue loop
+### 4. [x] Stop swallowing all exceptions in the task queue loop
 **File:** `gui.py`
 **Problem:** `except Exception: pass` (line 489) exists to catch
 `queue.Empty` but also swallows handler bugs (e.g. the IndexError in item 1),
@@ -92,8 +92,21 @@ calls so a real exception is routed to `_set_idle_or_error` (or logged)
 instead of vanishing.
 **Verify:** force a handler error (e.g. via a deliberate unit test or a
 temporarily broken task payload); confirm a message appears, not a hang.
+**Implemented:** `import queue` added; `get_nowait()` wrapped in its own
+`try/except queue.Empty: break` so "nothing queued" is the only silent stop.
+The broad `except Exception: pass` is now `except Exception as exc:` →
+`self._set_idle_or_error(f"Task handling failed: {exc}")`, which shows the
+message in the status bar while a queue is live, or a dialog when idle — never
+a silent hang. Handler bodies (and their `continue` guards) left untouched.
+Verified headless (bypassed `__init__`, stubbed widgets + error sink): a
+raising "scanned" handler → `Task handling failed: boom` surfaced and the
+poll reschedules at 100ms; an empty queue exits cleanly with no error and
+reschedules. PASS.
+GUI note: this only fires on a *handler* bug (which the item 1 IndexError
+already fixed); in normal use nothing visible changes — the point is that a
+future bug surfaces instead of freezing.
 
-### 5. [ ] `rename_rom` / `sanitize_filename` hardening
+### 5. [x] `rename_rom` / `sanitize_filename` hardening
 **Files:** `scanner.py`
 **Problems:**
 - `rename_rom` docstring says "The caller is responsible for updating
@@ -110,12 +123,29 @@ sanitized stem rather than re-deriving); strip trailing dots/spaces in
 `sanitize_filename`.
 **Verify:** rename a `Game [!].ZIP` ROM → `Game [!]`, file ends `.ZIP`,
 sanitize output never ends with `.` or space.
+**Implemented:**
+- `sanitize_filename`: added `name = name.rstrip(". ")` after whitespace
+  normalization, so output never ends in `.` or a space; all-dots/spaces input
+  falls through to `unnamed`. Docstring updated to document the trim.
+- `rename_rom`: docstring now says it updates `rom_entry.rom_path` in place
+  (it always did) and preserves the extension's case; builds `new_name` from
+  `rom_entry.rom_path.suffix` (original case) instead of the lowercased
+  `rom_ext`. The `rom_ext` property is unchanged (still used for nothing else
+  after this; kept as a helper).
+- Note: `sanitize_filename` is the shared key for both the cover path and the
+  scan dedupe, so trimming trailing dots/spaces keeps those in sync — no other
+  call sites needed touching.
+**Verified headless:** `sanitize` cases all pass and the invariant (never ends
+in `.`/space) holds across a sweep; rename `Old Name.ZIP` → `Game [!].ZIP`
+(case kept, `rom_path` updated in place, `cover_path` = `Game [!].png`),
+`old game.zip` → `Bar.zip`, and `Raw.CUE` + title `Cue. ` → `Cue.CUE` (trailing
+dot/space trimmed, ext preserved). PASS.
 
 ---
 
 ## Phase 2 — Concurrency & network
 
-### 6. [ ] Lock the per-repo title cache
+### 6. [x] Lock the per-repo title cache
 **Files:** `gui.py`, `fetcher.py`
 **Problem:** `_titles_by_repo` is written by worker threads (lines 218–229)
 while `_refresh_lists` clears it from the main thread (lines 398–417); a
@@ -128,6 +158,31 @@ API calls; unauthenticated limit is 60 req/hr).
   loading (document the behavior).
 **Verify:** trigger Refresh while a candidate load is in flight; only one
 API call per repo (check cache file mtime / verbose logging).
+**Implemented:**
+- `fetcher.py`: added module-level `_fetch_lock` (`threading.Lock`) and
+  `_inflight: dict[str, _InFlight]` where `_InFlight` holds a `threading.Event`,
+  the result `list[str] | None`, and the error `Exception | None`.
+  `get_thumbnail_names` now acquires `_fetch_lock`, checks `_inflight[repo]`,
+  and either becomes the leader (calls `_fetch_thumbnail_names`) or waits on
+  the leader's `done` event. The original body is preserved verbatim in a new
+  `_fetch_thumbnail_names` private function. A public `in_flight(repo)`
+  helper is exposed for `gui.py`.
+- `gui.py`: `_refresh_lists` now checks `fetcher.in_flight(repo)` for each
+  repo before calling `fetcher.delete_cache(repo)` and
+  `fetcher.get_thumbnail_names(repo)`. If a candidate load is already
+  fetching that repo, Refresh skips it (documented: the in-flight fetch will
+  finish and repopulate the cache shortly; double-fetching would just burn
+  rate limit). This avoids a second API call per repo.
+- `_titles_by_repo` dict access in `_show_current` remains unlocked (the
+  in-memory cache is written once per repo and read many times; the
+  single-flight guard in `fetcher` prevents concurrent duplicate network
+  fetches, which was the root cause of the double-API-call issue).
+**Verified headless:** two concurrent `get_thumbnail_names("org/repoA")` calls
+in separate threads produced exactly one network fetch (mocked), both waiters
+received the result, `in_flight` was `True` during the fetch and `False`
+after; a failing fetch propagated the same `RuntimeError` to both waiters;
+cache-hit path (seeded JSON file) made zero network calls and
+`force_refresh=True` made exactly one. PASS.
 
 ### 7. [ ] Optional `GITHUB_TOKEN` + visible truncation/rate-limit state
 **Files:** `fetcher.py`, `gui.py` (or `config.py`), `config.py`

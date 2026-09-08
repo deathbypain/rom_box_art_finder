@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -31,6 +32,29 @@ _BOXART_RE = re.compile(r"^Named_Boxarts/(.+)\.png$")
 _LINK_TARGET_RE = re.compile(r"^(?:Named_Boxarts/)?(.+)\.png$")
 
 
+class _InFlight:
+    """Coordination/result state for a single in-flight fetch of one repo."""
+
+    __slots__ = ("done", "result", "error")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result: list[str] | None = None
+        self.error: Exception | None = None
+
+
+# Single-flight per repo: concurrent callers of ``get_thumbnail_names`` for the
+# same repo share one fetch instead of each hitting the GitHub API.
+_fetch_lock = threading.Lock()
+_inflight: dict[str, _InFlight] = {}
+
+
+def in_flight(repo: str) -> bool:
+    """Return True while any thread is fetching title names for *repo*."""
+    with _fetch_lock:
+        return repo in _inflight
+
+
 def _cache_file(repo: str) -> Path:
     return config.CACHE_DIR / scanner.cache_key_for(repo)
 
@@ -40,7 +64,42 @@ def get_thumbnail_names(repo: str, force_refresh: bool = False) -> list[str]:
 
     The list is cached on disk as JSON. Pass ``force_refresh=True`` to
     re-fetch from the API even if a cache file exists.
+
+    Concurrent callers for the same repo share one network fetch
+    (single-flight): if a fetch is already in flight, other callers wait and
+    receive its result instead of issuing a second API call.
     """
+    with _fetch_lock:
+        entry = _inflight.get(repo)
+        if entry is None:
+            entry = _InFlight()
+            _inflight[repo] = entry
+            leader = True
+        else:
+            leader = False
+    if not leader:
+        entry.done.wait()  # bounded by the leader's API timeout
+        if entry.error is not None:
+            raise entry.error
+        return entry.result
+    try:
+        titles = _fetch_thumbnail_names(repo, force_refresh)
+        entry.result = titles
+        return titles
+    except Exception as exc:
+        entry.error = exc
+        raise
+    finally:
+        entry.done.set()
+        with _fetch_lock:
+            # Remove only this entry; a Refresh that started while we were
+            # fetching may have replaced it with its own in-flight marker.
+            if _inflight.get(repo) is entry:
+                del _inflight[repo]
+
+
+def _fetch_thumbnail_names(repo: str, force_refresh: bool = False) -> list[str]:
+    """Perform the actual (cached or network) title-list fetch for *repo*."""
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache = _cache_file(repo)
 
