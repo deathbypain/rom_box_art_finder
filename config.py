@@ -57,7 +57,7 @@ FOLDER_ALIASES = {
 MAX_SIZE = (250, 200)  # (width, height)
 
 # Number of ranked candidates to show per ROM in the review window.
-TOP_N = 10
+TOP_N = 20
 
 # ---------------------------------------------------------------------------
 # GitHub URL templates

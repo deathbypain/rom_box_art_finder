@@ -51,6 +51,9 @@ class ReviewApp:
         # Full-resolution preview image (kept so we can re-fit on resize).
         self._preview_full: Image.Image | None = None
         self._preview_photo: ImageTk.PhotoImage | None = None  # keep a ref alive
+        # (entry, candidate title) of the image in _preview_full, if any —
+        # lets Accept save that image locally instead of re-downloading it.
+        self._preview_source: tuple[scanner.RomEntry, str] | None = None
 
         self._build_widgets()
         self._set_idle()
@@ -147,6 +150,7 @@ class ReviewApp:
         self._candidates = []
         self._preview_full = None
         self._preview_photo = None
+        self._preview_source = None
         self._preview_label.config(image="")
         self._title_var.set("No candidates loaded.")
         self._dest_var.set("")
@@ -158,7 +162,35 @@ class ReviewApp:
         # Drop the current preview so stale art doesn't linger while loading.
         self._preview_full = None
         self._preview_photo = None
+        self._preview_source = None
         self._preview_label.config(text="Loading...", image="")
+
+    def _is_current_entry(self, entry: scanner.RomEntry) -> bool:
+        """True if *entry* is the ROM currently shown (queue live, at _index).
+
+        Every async task carries the entry it was started for; handlers use
+        this identity check to drop results that arrived after the user
+        navigated away (or after a new scan replaced the queue).
+        """
+        return (
+            0 <= self._index < len(self._queue)
+            and self._queue[self._index] is entry
+        )
+
+    def _selection_is(self, title: str) -> bool:
+        """True if the currently selected candidate has the given title."""
+        sel = self._listbox.curselection()
+        return bool(sel) and self._candidates[sel[0]].title == title
+
+    def _preview_image_for(self, entry: scanner.RomEntry, title: str) -> Image.Image | None:
+        """The full-res preview image, if it is the one for *entry*/*title*."""
+        source = self._preview_source
+        if source is None:
+            return None
+        src_entry, src_title = source
+        if src_entry is entry and src_title == title:
+            return self._preview_full
+        return None
 
     # -----------------------------------------------------------------------
     # Scanning
@@ -182,7 +214,7 @@ class ReviewApp:
                 entries = scanner.scan_platform(platform_dir)
                 self._task_queue.put(("scanned", entries))
             except Exception as exc:  # surface errors on the UI thread
-                self._task_queue.put(("error", str(exc)))
+                self._task_queue.put(("error", None, str(exc)))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -221,9 +253,11 @@ class ReviewApp:
                     self._titles_by_repo[repo] = fetcher.get_thumbnail_names(repo)
                 titles = self._titles_by_repo[repo]
                 ranked = matcher.rank_candidates(entry.base_name, titles, config.TOP_N)
-                self._task_queue.put(("candidates", [(s, t) for s, t in ranked]))
+                self._task_queue.put(
+                    ("candidates", entry, [(s, t) for s, t in ranked])
+                )
             except Exception as exc:
-                self._task_queue.put(("error", str(exc)))
+                self._task_queue.put(("error", entry, str(exc)))
 
         self._busy(f"Loading candidates for: {entry.base_name}")
         threading.Thread(target=_work, daemon=True).start()
@@ -237,7 +271,9 @@ class ReviewApp:
 
         def _work() -> None:
             img, error = fetcher.fetch_preview(repo, candidate.title)
-            self._task_queue.put(("preview", candidate.title, img, error))
+            self._task_queue.put(
+                ("preview", entry, candidate.title, img, error)
+            )
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -361,14 +397,26 @@ class ReviewApp:
         self._save_cover(entry, candidate)
 
     def _save_cover(self, entry: scanner.RomEntry, candidate: _Candidate) -> None:
-        """Download, resize, and save the selected cover; then advance."""
+        """Save the selected cover, then advance.
+
+        If the preview pane already holds this entry/candidate's image, it is
+        saved locally (resized to fit) instead of being downloaded a second
+        time; otherwise the cover is downloaded as before.
+        """
         repo = config.REPO_MAP[entry.platform]
+        # Copy on the UI thread so the worker owns a private image and never
+        # touches the shared _preview_full while Tk is rendering it.
+        preview = self._preview_image_for(entry, candidate.title)
+        local_img = preview.copy() if preview is not None else None
         self._busy(f"Saving cover: {candidate.title}")
         self.root.update_idletasks()
 
         def _work() -> None:
-            ok = fetcher.download_image(repo, candidate.title, entry.cover_path)
-            self._task_queue.put(("saved", ok, entry.cover_path.exists()))
+            if local_img is not None:
+                ok = fetcher.save_local_image(local_img, entry.cover_path)
+            else:
+                ok = fetcher.download_image(repo, candidate.title, entry.cover_path)
+            self._task_queue.put(("saved", entry, ok, entry.cover_path.exists()))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -410,7 +458,7 @@ class ReviewApp:
                     fetcher.get_thumbnail_names(repo)
                 self._task_queue.put(("refreshed", 0))
             except Exception as exc:
-                self._task_queue.put(("error", str(exc)))
+                self._task_queue.put(("error", None, str(exc)))
 
         self._busy("Refreshing title lists...")
         self.root.update_idletasks()
@@ -427,10 +475,10 @@ class ReviewApp:
                 if kind == "scanned":
                     self._start_queue(task[1])
                 elif kind == "candidates":
-                    if not (0 <= self._index < len(self._queue)):
-                        continue
-                    entries = task[1]
-                    self._candidates = [_Candidate(s, t) for s, t in entries]
+                    entry, ranked = task[1], task[2]
+                    if not self._is_current_entry(entry):
+                        continue  # user navigated away while this was loading
+                    self._candidates = [_Candidate(s, t) for s, t in ranked]
                     self._listbox.delete(0, tk.END)
                     for c in self._candidates:
                         self._listbox.insert(tk.END, f"{c.score:3d}  {c.title}")
@@ -451,17 +499,25 @@ class ReviewApp:
                         self._title_var.set("No candidates matched.")
                         self._preview_full = None
                         self._preview_photo = None
+                        self._preview_source = None
                         self._preview_label.config(text="No candidates matched.", image="")
                 elif kind == "preview":
-                    _title, img, error = task[1], task[2], task[3]
+                    entry, title, img, error = task[1], task[2], task[3], task[4]
+                    if not (
+                        self._is_current_entry(entry)
+                        and self._selection_is(title)
+                    ):
+                        continue  # user moved on or picked a different candidate
                     if img is None:
                         self._preview_full = None
                         self._preview_photo = None
+                        self._preview_source = None
                         self._preview_label.config(
                             text=error or "Preview download failed.", image=""
                         )
                     else:
                         self._preview_full = img
+                        self._preview_source = (entry, title)
                         # Invalidate the previous render so this fresh image
                         # is drawn even if it lands on the same pixel size.
                         self._preview_photo = None
@@ -473,8 +529,9 @@ class ReviewApp:
                         f"(saved {stats['saved']} / skipped {stats['skipped']})"
                     )
                 elif kind == "saved":
-                    ok, _ = task[1], task[2]
-                    entry = self._queue[self._index]
+                    entry, ok, _ = task[1], task[2], task[3]
+                    if not self._is_current_entry(entry):
+                        continue  # queue advanced or replaced while saving
                     self._outcomes[self._index] = "saved" if ok else "failed"
                     if ok:
                         self._status_var.set(f"Saved: {entry.cover_path.name}")
@@ -485,7 +542,10 @@ class ReviewApp:
                 elif kind == "refreshed":
                     self._progress_var.set("Title lists refreshed.")
                 elif kind == "error":
-                    self._set_idle_or_error(task[1])
+                    entry, message = task[1], task[2]
+                    if entry is not None and not self._is_current_entry(entry):
+                        continue  # error belongs to a ROM the user left
+                    self._set_idle_or_error(message)
         except Exception:
             pass  # queue.Empty
 

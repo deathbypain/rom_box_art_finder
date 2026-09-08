@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "sessionId": "session-452fc1be-841d-402e-ac60-90a778855890",
+  "cwd": "C:\\Users\\digil\\OneDrive\\Documents\\python projects\\rom_box_art_finder",
+  "checkpoints": [
+    {
+      "turn": 1,
+      "commit": "af4ee7cfb80a886f10f1ce57856ee38d9979cfff",
+      "parent": "b89ac6db454448fee46612d58b6d3ad3e94d7d8c",
+      "time": 1788855706984,
+      "untracked": [
+        "FIX_PLAN.md",
+        "tests/_res/rom_one.png",
+        "tests/_res/rom_zero.png",
+        "tests/test_item14_reuse_preview.py",
+        "tests/test_item1_stale_drop.py"
+      ],
+      "truncated": false
+    }
+  ],
+  "rolls": [],
+  "updatedAt": 1788855707613
+}

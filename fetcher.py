@@ -149,22 +149,36 @@ def _fetch_image(repo: str, title: str) -> Image.Image:
         raise BoxartFetchError(f"Failed to load '{title}': {exc}") from exc
 
 
-def download_image(repo: str, title: str, dest_path: Path) -> bool:
-    """Download a boxart, resize it, and save it as PNG at *dest_path*.
+def save_local_image(img: Image.Image, dest_path: Path) -> bool:
+    """Resize *img* to fit ``config.MAX_SIZE`` and save it as PNG.
 
-    Returns True on success, False on failure (network error or bad image).
+    Non-RGB/RGBA images are converted to RGBA first. Creates the parent
+    directory if needed. Returns True on success, False on write error.
+    Used for covers that are already in memory (the held preview image).
     """
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        img = _fetch_image(repo, title)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGBA")
         img = _resize_to_fit(img)
         img.save(dest_path, "PNG")
         return True
+    except OSError as exc:
+        log.warning("Local save failed for %s: %s", dest_path, exc)
+        return False
+
+
+def download_image(repo: str, title: str, dest_path: Path) -> bool:
+    """Download a boxart, resize it, and save it as PNG at *dest_path*.
+
+    Returns True on success, False on failure (network error or bad image).
+    """
+    try:
+        img = _fetch_image(repo, title)
     except (BoxartFetchError, OSError) as exc:
         log.warning("Download failed for %s/%s: %s", repo, title, exc)
         return False
+    return save_local_image(img, dest_path)
 
 
 def fetch_preview(repo: str, title: str) -> tuple[Image.Image | None, str | None]:
