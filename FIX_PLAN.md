@@ -73,7 +73,14 @@ used by `cover_path`) was already seen are dropped, so any same-base-name
 pair across any platform yields one queue entry. `config.py` unchanged.
 Verified: `TestRoot/PS1` with `Game.bin`+`Game.cue` (+ lone `Lone.bin`,
 `CueOnly.cue`) scans to exactly `['CueOnly.cue', 'Game.cue', 'Lone.bin']`,
-`Game` entry is `.cue` with cover `Game.png`.
+`Game` entry is `.cue` with cover `Game.png`. GUI test (user): queue of
+`game1.img`, `game2.cue`+`game2.bin`, `game3.bin` → exactly 3 ROMs listed,
+no duplicates; previews load correctly.
+**Unplanned (item 3 testing):** first PS1 candidate-load hit a transient
+GitHub **500** on the recursive trees endpoint (not rate limiting — that is
+a 403). Added retry with backoff to `fetcher.get_thumbnail_names`
+(`fetcher.py`): 3 attempts, 2s/4s delays, logged; same `RuntimeError` after
+final failure. Not a numbered item; noted here for traceability.
 
 ### 4. [ ] Stop swallowing all exceptions in the task queue loop
 **File:** `gui.py`

@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import requests
@@ -55,12 +56,31 @@ def get_thumbnail_names(repo: str, force_refresh: bool = False) -> list[str]:
 
     url = config.API_TREES_URL.format(repo=repo)
     headers = {"User-Agent": config.USER_AGENT}
-    try:
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.RequestException as exc:
-        raise RuntimeError(f"GitHub API request failed for {repo}: {exc}") from exc
+
+    # The recursive trees endpoint is heavy and GitHub occasionally returns
+    # a transient 5xx; retry with backoff before giving up. (Rate limits are
+    # 403; backing off would not help, but a few retries cost little and a
+    # limit could reset within the window.)
+    attempts = 3
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            last_exc = None
+            break
+        except (requests.RequestException, ValueError) as exc:
+            last_exc = exc
+            if attempt < attempts - 1:
+                delay = 2.0 * (attempt + 1)
+                log.warning(
+                    "GitHub API attempt %d/%d failed for %s (%s); retrying in %.1fs",
+                    attempt + 1, attempts, repo, exc, delay,
+                )
+                time.sleep(delay)
+    if last_exc is not None:
+        raise RuntimeError(f"GitHub API request failed for {repo}: {last_exc}") from last_exc
 
     titles: list[str] = []
     for item in data.get("tree", []):
