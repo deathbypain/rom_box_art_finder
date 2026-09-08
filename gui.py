@@ -144,8 +144,22 @@ class ReviewApp:
     # -----------------------------------------------------------------------
     # Idle / state helpers
     # -----------------------------------------------------------------------
+    def _reset_queue_state(self) -> None:
+        """Clear the live queue so an idle/finished app can't resurrect ROMs.
+
+        _set_idle clears the listbox and preview; this clears the queue
+        bookkeeping (_queue / _index / _outcomes) that _step, _accept,
+        _reject and _show_current still read. Without it, Prev after
+        "Queue complete" revives the last ROM and lets the user re-accept /
+        re-save its cover. _titles_by_repo is deliberately left cached.
+        """
+        self._queue = []
+        self._index = 0
+        self._outcomes = []
+
     def _set_idle(self) -> None:
-        """Show no-queue state."""
+        """Show no-queue state (and make sure the queue is not live)."""
+        self._reset_queue_state()
         self._listbox.delete(0, tk.END)
         self._candidates = []
         self._preview_full = None

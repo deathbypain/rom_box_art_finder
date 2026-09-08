@@ -79,11 +79,47 @@ def _canonical_platform(folder_name: str) -> str | None:
     return _PLATFORM_LOOKUP.get(folder_name.upper())
 
 
+# PS1 cue/bin pairs: a standard PS1 disc is ``Game.cue`` + ``Game.bin``.
+# Only the cue sheet is kept as the ROM entry, mirroring the reference
+# ``download_covers.ps1`` filter.
+_PAIRED_DATA_EXTS = {".bin"}
+
+
+def _drop_paired_data_files(roms: list[Path]) -> list[Path]:
+    """Collapse PS cue/bin pairs, keeping the ``.cue``.
+
+    A ``.bin`` whose base name matches a sibling ``.cue`` is dropped; the
+    cue sheet is the canonical representation of the disc pair. ``.cue``
+    files and ``.bin`` files with no sibling ``.cue`` survive. Base-name
+    matching is case-insensitive (as on Windows, and as the PowerShell
+    reference does with its default hashtable).
+    """
+    cue_bases = {
+        rom.stem.lower() for rom in roms if rom.suffix.lower() == ".cue"
+    }
+    return [
+        rom
+        for rom in roms
+        if not (
+            rom.suffix.lower() in _PAIRED_DATA_EXTS
+            and rom.stem.lower() in cue_bases
+        )
+    ]
+
+
 def get_roms_in_platform(platform_dir: Path, platform_key: str) -> list[Path]:
     """Return ROM files (sorted by name) in a platform folder.
 
     Only files whose extension appears in ``config.ROM_EXT_MAP`` are
     returned; everything else is ignored.
+
+    For the PS platform, a ``.bin`` that has a sibling ``.cue`` sharing its
+    base name is dropped in favour of the cue (mirrors
+    ``download_covers.ps1``). Finally, any ROMs that would map to the same
+    cover image (identical sanitized base name) are de-duplicated, keeping
+    the first in sorted order — this is what prevents a PS1
+    ``Game.bin``/``Game.cue`` pair (and any other same-base-name pair) from
+    producing two queue entries for the same cover.
     """
     valid_exts = config.ROM_EXT_MAP.get(platform_key, [])
     if not valid_exts:
@@ -95,7 +131,23 @@ def get_roms_in_platform(platform_dir: Path, platform_key: str) -> list[Path]:
             continue
         if entry.suffix.lower() in valid_exts:
             roms.append(entry)
-    return sorted(roms, key=lambda p: p.stem.lower())
+    roms.sort(key=lambda p: (p.stem.lower(), p.name.lower()))
+
+    # Collapse PS cue/bin pairs before de-duplication.
+    if platform_key == "PS1":
+        roms = _drop_paired_data_files(roms)
+
+    # De-duplicate ROMs that share a cover path (same sanitized base name),
+    # keeping the first in sorted order.
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for rom in roms:
+        key = sanitize_filename(rom.stem).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(rom)
+    return unique
 
 
 def scan_platform(platform_dir: Path) -> list[RomEntry]:

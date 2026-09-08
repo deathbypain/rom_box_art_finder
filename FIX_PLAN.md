@@ -31,7 +31,7 @@ checking which ROM the task was started for. Bounds check
 under its own title and the old result is discarded. Repeat for previews and
 accept-saves (slow network or large image).
 
-### 2. [ ] Reset queue state on idle/finish
+### 2. [x] Reset queue state on idle/finish
 **File:** `gui.py`
 **Problem:** `_set_idle` (lines 144–154) clears the listbox/preview but not
 `_queue`, `_index`, `_outcomes`. After "Queue complete" or an idle error, the
@@ -41,11 +41,16 @@ re-accept/re-save covers.
 (and `_titles_by_repo` may stay cached). Called from `_finish` and from the
 idle error path. Keep the in-queue error path (status line only) separate
 from the idle path.
+**Implemented:** `_reset_queue_state()` is called from `_set_idle` itself —
+the single choke point every idle transition goes through (`_finish`, the
+idle-error `else` branch, the empty-scan path, and `__init__`). The
+in-queue error path in `_set_idle_or_error` still sets only the status line
+and never calls `_set_idle`, so a mid-queue error keeps the queue live.
 **Verify:** complete a queue → press Prev: nothing happens. Trigger an error
 while idle → re-scan works cleanly. Trigger an error mid-queue → queue stays
 live, status shows the error.
 
-### 3. [ ] Dedupe ROMs sharing a cover path (PS1 `.bin`/`.cue` pairs)
+### 3. [x] Dedupe ROMs sharing a cover path (PS1 `.bin`/`.cue` pairs)
 **Files:** `scanner.py`, `config.py`
 **Problem:** `ROM_EXT_MAP['PS1']` contains `.img`, `.bin`, `.cue`, … and
 `get_roms_in_platform` returns every matching file. A standard PS1 ROM pair
@@ -58,6 +63,17 @@ whose base name has a sibling `.cue` (mirrors PS-script intent) — at minimum
 dedup-by-cover-path is required.
 **Verify:** create `TestRoot/PS1/Game.bin` + `Game.cue`; scan lists one
 entry; cover path is `Game.png`.
+**Implemented:** both layers, in `get_roms_in_platform`. (1) PS1-only:
+`_drop_paired_data_files` drops a `.bin` whose base name matches a sibling
+`.cue` (case-insensitive; cue kept as the canonical entry — per user,
+`.cue` files only ever pair with `.bin`, so `.img` is not treated as a
+paired data file). (2) General backstop: after sorting by
+`(stem.lower(), name.lower())`, ROMs whose *sanitized stem* (the exact key
+used by `cover_path`) was already seen are dropped, so any same-base-name
+pair across any platform yields one queue entry. `config.py` unchanged.
+Verified: `TestRoot/PS1` with `Game.bin`+`Game.cue` (+ lone `Lone.bin`,
+`CueOnly.cue`) scans to exactly `['CueOnly.cue', 'Game.cue', 'Lone.bin']`,
+`Game` entry is `.cue` with cover `Game.png`.
 
 ### 4. [ ] Stop swallowing all exceptions in the task queue loop
 **File:** `gui.py`
