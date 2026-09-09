@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -57,6 +58,32 @@ def in_flight(repo: str) -> bool:
 
 def _cache_file(repo: str) -> Path:
     return config.CACHE_DIR / scanner.cache_key_for(repo)
+
+
+def cache_meta(repo: str) -> dict:
+    """Return the fetch metadata stored in *repo*'s cache file.
+
+    Keys: ``repo``, ``truncated`` (bool), ``fetched_at`` (ISO timestamp).
+    Older cache files written before the metadata fields were introduced
+    still work: missing ``truncated`` is reported as ``False`` and a missing
+    ``fetched_at`` as ``None``. Returns an empty dict if there is no readable
+    cache for this repo.
+    """
+    cache = _cache_file(repo)
+    if not cache.exists():
+        return {}
+    try:
+        data = json.loads(cache.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Could not read cache meta for %s: %s", repo, exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "repo": data.get("repo", repo),
+        "truncated": bool(data.get("truncated", False)),
+        "fetched_at": data.get("fetched_at"),
+    }
 
 
 def get_thumbnail_names(repo: str, force_refresh: bool = False) -> list[str]:
@@ -115,6 +142,10 @@ def _fetch_thumbnail_names(repo: str, force_refresh: bool = False) -> list[str]:
 
     url = config.API_TREES_URL.format(repo=repo)
     headers = {"User-Agent": config.USER_AGENT}
+    # An optional GITHUB_TOKEN raises the API limit from 60 to 5000 req/hr.
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"token {token}"
 
     # The recursive trees endpoint is heavy and GitHub occasionally returns
     # a transient 5xx; retry with backoff before giving up. (Rate limits are
@@ -147,15 +178,25 @@ def _fetch_thumbnail_names(repo: str, force_refresh: bool = False) -> list[str]:
         if m:
             titles.append(m.group(1))
 
-    # GitHub API truncates very large trees. Warn so the user can refresh.
-    if data.get("truncated"):
+    # GitHub API truncates very large trees. Record the flag so the GUI can
+    # surface it, and warn in the log.
+    truncated = bool(data.get("truncated"))
+    if truncated:
         log.warning(
             "GitHub API tree for %s was truncated; some titles may be missing.",
             repo,
         )
 
     cache.write_text(
-        json.dumps({"repo": repo, "titles": titles}, indent=2),
+        json.dumps(
+            {
+                "repo": repo,
+                "titles": titles,
+                "truncated": truncated,
+                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     log.info("Fetched %d titles for %s", len(titles), repo)

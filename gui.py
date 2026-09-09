@@ -527,6 +527,13 @@ class ReviewApp:
                         self._preview_photo = None
                         self._preview_source = None
                         self._preview_label.config(text="No candidates matched.", image="")
+                    # Surface truncation warning (list may be incomplete).
+                    repo = config.REPO_MAP[entry.platform]
+                    meta = fetcher.cache_meta(repo)
+                    if meta.get("truncated"):
+                        self._status_var.set(
+                            f"\u26a0 Truncated list for {entry.platform} \u2013 some titles may be missing."
+                        )
                 elif kind == "preview":
                     entry, title, img, error = task[1], task[2], task[3], task[4]
                     if not (
@@ -567,6 +574,19 @@ class ReviewApp:
                     self._show_current()
                 elif kind == "refreshed":
                     self._progress_var.set("Title lists refreshed.")
+                    # Tell the user if any repo's list came back truncated.
+                    # Show the affected platform names (friendlier than URLs).
+                    truncated_platforms = [
+                        platform
+                        for platform, repo in config.REPO_MAP.items()
+                        if fetcher.cache_meta(repo).get("truncated")
+                    ]
+                    if truncated_platforms:
+                        self._status_var.set(
+                            "\u26a0 Truncated list(s) for "
+                            + ", ".join(sorted(truncated_platforms))
+                            + " \u2013 some titles may be missing."
+                        )
                 elif kind == "error":
                     entry, message = task[1], task[2]
                     if entry is not None and not self._is_current_entry(entry):

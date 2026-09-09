@@ -184,7 +184,7 @@ after; a failing fetch propagated the same `RuntimeError` to both waiters;
 cache-hit path (seeded JSON file) made zero network calls and
 `force_refresh=True` made exactly one. PASS.
 
-### 7. [ ] Optional `GITHUB_TOKEN` + visible truncation/rate-limit state
+### 7. [x] Optional `GITHUB_TOKEN` + visible truncation/rate-limit state
 **Files:** `fetcher.py`, `gui.py` (or `config.py`), `config.py`
 **Problems:**
 - Only `User-Agent` is sent; unauthenticated API limit is 60 req/hr and
@@ -200,6 +200,26 @@ cache-hit path (seeded JSON file) made zero network calls and
 **Verify:** set a fake token and confirm it appears in the request (unit
 test with `requests` mocked); simulate a truncated response and confirm the
 GUI shows a warning, not just a log line.
+**Implemented:**
+- `fetcher.py`: reads `GITHUB_TOKEN` from the environment; when present,
+  sends `Authorization: token <token>` alongside `User-Agent` (raises the
+  unauthenticated 60 req/hr limit to 5000 req/hr).
+- `fetcher.py`: the API response's `truncated` flag and a fetch timestamp
+  (`fetched_at`) are now persisted in the cache JSON alongside `repo` and
+  `titles`. New public helper `cache_meta(repo)` reads that metadata back
+  (returns `{}` when there is no readable cache; missing `truncated` in
+  old-format caches defaults to `False`).
+- `gui.py`: after a candidate list loads, the status line shows
+  "⚠ Truncated list for <platform> – some titles may be missing." when that
+  repo's cached list was truncated; after a Refresh, the status line names
+  every platform whose list came back truncated. The existing `log.warning`
+  is kept.
+**Verified headless:** with `GITHUB_TOKEN` set, `requests.get` was observed
+receiving `Authorization: token ghp_test_token_123`; with it unset, no
+Authorization header was sent; a mocked `truncated: true` response landed
+`truncated: true` + `fetched_at` in `cache_meta`, a normal response landed
+`truncated: false`; missing cache → `{}`; old-format cache (no `truncated`
+key) → `False`. PASS.
 
 ### 8. [ ] Set up logging in the entry point
 **Files:** `main.py`
