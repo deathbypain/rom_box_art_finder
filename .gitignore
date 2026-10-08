@@ -15,3 +15,11 @@ dist/
 
 # Test fixtures (local test data)
 TestRoot/
+
+# IDE/session artifacts
+.dsh/
+
+# Editor
+.vscode/
+.idea/
+*.swp
