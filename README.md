@@ -11,6 +11,11 @@ repository on GitHub and lets you attach the correct image to each of your ROMs.
 > Every image match requires **human approval**. The tool proposes ranked
 > candidates; *you* make the final decision on each one.
 
+> 🚧 **Work in progress.** As of now, the only platforms supported in the
+> code are the ones in [`config.py`'s `REPO_MAP`](config.py) (listed below).
+> Additional platforms can be added easily by extending `REPO_MAP` and
+> `ROM_EXT_MAP` in that file.
+
 ---
 
 ## What it does
